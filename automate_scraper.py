@@ -4,6 +4,7 @@ from bs4 import BeautifulSoup
 import logging
 from typing import List, Dict
 import time
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
@@ -28,7 +29,7 @@ def search_part(part_number: str) -> List[Dict[str, str]]:
     url = f"https://avspare.com/search/?q={part_number}"
 
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36'
     }
 
     logging.info(f"Searching for part: {part_number} at {url}")
@@ -68,7 +69,7 @@ def search_part(part_number: str) -> List[Dict[str, str]]:
 
     except requests.exceptions.HTTPError as e:
         if response.status_code == 503:
-            logging.error(f"HTTP Error 503: Service Temporarily Unavailable for part {part_number}.")
+            logging.error(f"HTTP Error 503: Service Temporarily Unavailable for part {part_number}. (Anti-bot protection active)")
         else:
             logging.error(f"HTTP Error encountered: {e}")
         return []
@@ -92,58 +93,43 @@ def save_to_db(conn, parts_data: List[Dict[str, str]]) -> int:
     conn.commit()
     return count
 
-def insert_fallback_data(conn):
-    """Inserts mock data to demonstrate the DB is created and structured properly even if the site is down."""
-    fallback_data = [
-        {
-            'search_query': '1R-0716',
-            'title': '1R-0716 Caterpillar Filter Element',
-            'description': 'Engine Oil Filter Element for Caterpillar.',
-            'category': 'Caterpillar',
-            'link': 'https://avspare.com/search/?q=1R-0716_mock1'
-        },
-        {
-            'search_query': 'RE504836',
-            'title': 'RE504836 John Deere Oil Filter',
-            'description': 'Oil Filter used on various John Deere engines.',
-            'category': 'John Deere',
-            'link': 'https://avspare.com/search/?q=RE504836_mock1'
-        },
-        {
-            'search_query': '84298115',
-            'title': '84298115 Case IH Air Filter',
-            'description': 'Air filter cartridge for Case IH tractors.',
-            'category': 'Case',
-            'link': 'https://avspare.com/search/?q=84298115_mock1'
-        }
-    ]
-    count = save_to_db(conn, fallback_data)
-    if count > 0:
-        logging.info(f"Inserted {count} fallback sample records into the database because live scraping failed.")
+def load_parts_from_file(filename="part_numbers.txt"):
+    """Loads part numbers from a text file, one per line."""
+    if not os.path.exists(filename):
+        logging.warning(f"File {filename} not found. Creating a sample one.")
+        with open(filename, 'w') as f:
+            f.write("1R-0716\nRE504836\n84298115\n3936316\n11110022\n")
+
+    with open(filename, 'r') as f:
+        return [line.strip() for line in f if line.strip()]
 
 def main():
     logging.info("Starting automated AVSpare part scraper...")
     conn = setup_db()
 
-    # Predefined list of part numbers to search automatically
-    part_numbers_to_search = ['1R-0716', 'RE504836', '84298115']
+    # Load thousands of part numbers from a file (if you provide one)
+    part_numbers_to_search = load_parts_from_file("part_numbers.txt")
+
+    logging.info(f"Loaded {len(part_numbers_to_search)} part numbers to search.")
 
     total_saved = 0
-    for part in part_numbers_to_search:
+    for idx, part in enumerate(part_numbers_to_search):
+        logging.info(f"Progress: {idx + 1}/{len(part_numbers_to_search)}")
         parts_data = search_part(part)
 
         if parts_data:
             count = save_to_db(conn, parts_data)
             logging.info(f"Successfully saved {count} new items for part number '{part}'.")
             total_saved += count
-
-        # Be polite, sleep between requests
-        time.sleep(2)
+            # Be polite, sleep longer to avoid rate limits when actually scraping
+            time.sleep(3)
+        else:
+            # If we hit a 503, sleep even longer
+            time.sleep(5)
 
     if total_saved == 0:
         logging.warning("No live data could be retrieved. The site might be blocking automated access (503).")
-        logging.info("Generating fallback database records to demonstrate functionality...")
-        insert_fallback_data(conn)
+        logging.info("Run this script locally on your own machine to bypass server-level IP blocks!")
 
     conn.close()
     logging.info("Automated scraping complete. Data is stored in 'avspare_parts.db'.")
